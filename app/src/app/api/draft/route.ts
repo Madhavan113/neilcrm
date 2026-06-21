@@ -15,10 +15,14 @@ const ContactSchema = z.object({
   companyDomain: z.string().nullable(),
   linkedinUrl: z.string().nullable(),
   location: z.string().nullable(),
+  industry: z.string().nullable(),
+  employeeCount: z.number().nullable(),
+  companyDescription: z.string().nullable(),
   highlights: z.array(z.string()),
   source: z.enum(["apollo", "pdl", "manual"]),
   raw: z.unknown(),
   matched: z.boolean(),
+  companyMatched: z.boolean(),
 });
 
 const Body = z.object({

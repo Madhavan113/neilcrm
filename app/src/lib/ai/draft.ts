@@ -36,13 +36,21 @@ function contactBlock(c: EnrichedContact): string {
     c.fullName && `Name: ${c.fullName}`,
     c.title && `Title: ${c.title}`,
     c.company && `Company: ${c.company}`,
+    c.industry && `Industry: ${c.industry}`,
+    c.employeeCount && `Company size: ~${c.employeeCount} employees`,
     c.location && `Location: ${c.location}`,
     c.linkedinUrl && `LinkedIn: ${c.linkedinUrl}`,
+    c.companyDescription && `About the company: ${c.companyDescription}`,
     c.highlights.length > 0 && `Signals: ${c.highlights.join("; ")}`,
   ].filter(Boolean);
-  if (!c.matched) {
+
+  if (!c.matched && c.companyMatched) {
     lines.push(
-      "(No enrichment match — only the email/domain is known. Keep it light and don't fabricate personal details.)",
+      "(We know the COMPANY but not the individual. The recipient's name/title are unknown — open with company-level relevance, address them generically (no fake first name), and do NOT invent personal details.)",
+    );
+  } else if (!c.matched) {
+    lines.push(
+      "(No enrichment match — only the email/domain is known. Keep it light and don't fabricate any details.)",
     );
   }
   return lines.join("\n");
@@ -91,8 +99,12 @@ export function streamDraft(params: DraftParams): ReadableStream<Uint8Array> {
   const stream = getClient().messages.stream({
     model: "claude-opus-4-8",
     max_tokens: 2000,
-    thinking: { type: "adaptive" },
-    output_config: { effort: "medium" }, // drafting is light; medium keeps it snappy
+    // Drafting a short email is a low-complexity generative task, and the UX
+    // requirement is speed. Thinking adds seconds of latency before the first
+    // token with little quality gain here, so we skip it and run low effort.
+    // The strict "respond in this exact format and nothing else" system prompt
+    // keeps Opus from rambling in the visible response without thinking on.
+    output_config: { effort: "low" },
     system: SYSTEM_PROMPT,
     messages: [{ role: "user", content: buildUserMessage(params) }],
   });

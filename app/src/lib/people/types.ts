@@ -14,13 +14,20 @@ export interface EnrichedContact {
   companyDomain: string | null;
   linkedinUrl: string | null;
   location: string | null;
+  // Company-level enrichment — available even when person data isn't (Apollo
+  // free plan blocks person endpoints but allows org enrichment by domain).
+  industry: string | null;
+  employeeCount: number | null;
+  companyDescription: string | null;
   /** Free-form signals we can feed the drafting model (seniority, industry, headline). */
   highlights: string[];
   source: ContactSource;
   /** Raw provider payload, kept for auditing / later persistence. */
   raw: unknown;
-  /** False when the provider had no match for this email (we still echo the address). */
+  /** True when we resolved the actual person (name/title), not just their company. */
   matched: boolean;
+  /** True when we at least resolved the company for this email's domain. */
+  companyMatched: boolean;
 }
 
 export interface PeopleProvider {

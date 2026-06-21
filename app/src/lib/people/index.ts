@@ -62,10 +62,14 @@ export async function enrichEmails(emails: string[]): Promise<EnrichedContact[]>
         companyDomain: email.split("@")[1] ?? null,
         linkedinUrl: null,
         location: null,
+        industry: null,
+        employeeCount: null,
+        companyDescription: null,
         highlights: [],
         source: "apollo" as const,
         raw: null,
         matched: false,
+        companyMatched: false,
       },
   );
 }

@@ -50,6 +50,14 @@ export default function ComposePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ emails }),
       });
+      // Guard against an HTML error page (wrong port / server down) so we don't
+      // throw a cryptic "Unexpected token '<'" from res.json().
+      const ct = res.headers.get("content-type") ?? "";
+      if (!ct.includes("application/json")) {
+        throw new Error(
+          `Expected JSON from /api/enrich but got ${res.status} (${ct || "no content-type"}). Is the dev server running on this port?`,
+        );
+      }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Enrichment failed");
       setContacts(data.contacts as EnrichedContact[]);
@@ -140,6 +148,13 @@ export default function ComposePage() {
 
           {contacts.length > 0 && (
             <div className="space-y-2">
+              {contacts.some((c) => !c.matched && c.companyMatched) && (
+                <p className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+                  Apollo&apos;s free plan locks person-level lookups, so we enriched the{" "}
+                  <strong>company</strong> instead and the AI personalizes on that. Upgrade Apollo
+                  (or wire People Data Labs) to resolve names &amp; titles.
+                </p>
+              )}
               <p className="text-xs font-medium uppercase tracking-wide text-neutral-400">
                 {contacts.length} contact{contacts.length > 1 ? "s" : ""}
               </p>
@@ -155,13 +170,16 @@ export default function ComposePage() {
                       }`}
                     >
                       <div className="flex items-baseline justify-between gap-2">
-                        <span className="font-medium">{c.fullName ?? c.email}</span>
-                        {!c.matched && (
+                        <span className="font-medium">{c.fullName ?? c.company ?? c.email}</span>
+                        {!c.matched && c.companyMatched && (
+                          <span className="text-xs text-blue-600">company only</span>
+                        )}
+                        {!c.matched && !c.companyMatched && (
                           <span className="text-xs text-amber-600">no match</span>
                         )}
                       </div>
                       <div className="text-sm text-neutral-500">
-                        {[c.title, c.company].filter(Boolean).join(" · ") || c.email}
+                        {[c.title, c.company, c.industry].filter(Boolean).join(" · ") || c.email}
                       </div>
                     </button>
                   </li>

@@ -27,6 +27,12 @@ Flow on `/compose`:
 2. Pick a contact, add **sender context** (who you are / your offer) and an optional **steering prompt**.
 3. **Draft** (`POST /api/draft`) streams a Claude-written email into an editable pane. **Revise** re-runs with your edits + new steering as context.
 
+### ⚠️ Apollo plan limitation
+
+The current `APOLLO_API_KEY` is on Apollo's **free plan**, which blocks all *person* endpoints (`people/match`, `bulk_match`, `mixed_people/search` → `403 API_INACCESSIBLE`). Only `organizations/enrich` works. So the adapter **degrades gracefully**: when person lookups are blocked it enriches the **company** by email domain (industry, size, description, keywords) and the AI personalizes on that, addressing the recipient generically (`matched:false, companyMatched:true`).
+
+To resolve real names/titles, upgrade Apollo to a paid plan with API access, or wire People Data Labs (deferred). The adapter starts using person data automatically the moment the key can reach those endpoints.
+
 ### Key files
 
 | Path | Role |
