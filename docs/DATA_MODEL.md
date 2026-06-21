@@ -43,6 +43,7 @@ Goal: minimal schema for Phase 1–3. Drizzle conventions, snake_case, UUID PKs,
 
 ### `email_messages`
 - `id`, `thread_id`, `direction` (`outbound` | `inbound`), `from_address`, `to_address`, `body_html`, `body_text`, `agent_draft_id` (nullable — links to the draft this came from), `sent_at`, `received_at`
+- `provider_message_id` (Gmail message id), `tracking_id` (uuid embedded in the pixel + wrapped links so we can attribute opens/clicks back to this exact message)
 
 ### `agent_drafts`
 - `id`, `org_id`, `contact_id`, `thread_id` (nullable for first-touch), `kind` (`first_touch` | `follow_up` | `reply`), `model` (`sonnet-4-6` | `opus-4-7`), `prompt` (text), `body_markdown` (text), `status` (`awaiting_approval` | `approved` | `edited` | `rejected` | `sent`), `created_by_agent_run_id`, `reviewed_by_user_id` (nullable), `reviewed_at`, `created_at`
@@ -52,9 +53,32 @@ Goal: minimal schema for Phase 1–3. Drizzle conventions, snake_case, UUID PKs,
 - One row per Inngest function invocation. Lets us replay/debug agent decisions.
 
 ### `reply_classifications`
-- `id`, `email_message_id`, `intent` (`interested` | `not_interested` | `question` | `meeting_request` | `unsubscribe` | `other`), `confidence`, `proposed_action` (jsonb), `model`, `created_at`
+- `id`, `email_message_id`, `intent` (`interested` | `not_interested` | `question` | `meeting_request` | `objection` | `auto_reply` | `unsubscribe` | `other`), `confidence`, `summary` (one-line gist), `proposed_action` (jsonb — the structured next step the human approves), `model`, `created_at`
+
+## Engagement, follow-ups & structured response (added 2026-06-21)
+
+The differentiator is closing the loop: know when a prospect engages, follow up
+automatically until they reply, and respond to inbound in a structured, human-approved
+way. These entities power that.
+
+### `email_events` — the engagement/conversion signal
+- `id`, `org_id`, `message_id`, `contact_id`, `type` (`queued` | `sent` | `delivered` | `opened` | `clicked` | `replied` | `bounced` | `complained` | `unsubscribed` | `failed`), `occurred_at`, `metadata` (jsonb — clicked URL, coarse user-agent/IP, bounce reason), `created_at`
+- Append-only. `opened` comes from the tracking pixel, `clicked` from the link redirector, `replied` from inbound ingestion. This table is what conversion reporting + "should I follow up?" decisions read from.
+- **Caveat to encode in product logic:** Apple Mail Privacy Protection pre-fetches the pixel, so a raw `opened` can be a machine open. Treat opens as a soft signal; weight clicks and replies higher.
+
+### `sequences` — a named follow-up cadence
+- `id`, `org_id`, `name`, `steps` (jsonb — `[{ day_offset, kind: 'follow_up', prompt_template }]`), `active`, `created_at`, `updated_at`
+
+### `sequence_enrollments` — a contact moving through a sequence
+- `id`, `org_id`, `contact_id`, `sequence_id`, `thread_id` (nullable), `current_step`, `status` (`active` | `paused` | `completed` | `stopped`), `next_action_at`, `paused_reason`, `created_at`, `updated_at`
+- A reply or unsubscribe flips status to `paused`/`stopped` so we never follow up after someone engages. The follow-up worker (Inngest) wakes on `next_action_at`, drafts the next step into the approval queue, and advances `current_step`.
+
+### `reply_classifications` (expanded — see below)
+- Inbound replies are classified, then routed to a structured response. Intents drive a playbook: `meeting_request` → propose times; `question` → draft an answer; `objection` → draft a rebuttal; `unsubscribe` → suppress + stop sequence.
 
 ## Indexes (initial)
+- `email_events(org_id, contact_id, occurred_at desc)`, `email_events(message_id, type)`
+- `sequence_enrollments(org_id, status, next_action_at)` — the follow-up worker's poll query
 
 - `contacts(org_id, status, last_activity_at desc)`
 - `contacts(org_id, email)` unique
