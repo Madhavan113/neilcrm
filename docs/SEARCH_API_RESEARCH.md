@@ -1,5 +1,7 @@
 # People Search API Research (May 2026)
 
+> **Status (2026-06-21):** historical research. Current decision is **Apollo now, PDL later** — see `ARCHITECTURE.md`. The original PDL-primary recommendation below still informs the eventual NL-search phase.
+
 Goal: pick a primary + secondary data source for the infrastructure-operator search feature.
 
 ## TL;DR

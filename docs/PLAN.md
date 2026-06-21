@@ -2,78 +2,47 @@
 
 ## North star
 
-A CRM that, for an infrastructure exchange, does three things 10× better than HubSpot:
+An inbound + outbound AI CRM for an infrastructure exchange that does three things 10× better than HubSpot:
 
-1. **Finds the right infra operators.** Natural-language search → ranked list of relevant contacts (with verified email, role, company, recency signal).
-2. **Drafts and queues outreach for a human to approve.** Monaco-style human-in-the-loop. Agents don't auto-send.
-3. **Watches the reply thread and pulls the human in at the right moment** — when a prospect signals interest, asks a pricing question, or proposes a meeting.
+1. **Reaches the right infra operators with AI-drafted, human-steered outreach.** You give it emails (or, later, a natural-language search); it enriches them and drafts a curated email you can prompt and edit.
+2. **Tracks engagement and follows up** — opens, clicks, replies → automatic follow-up sequences that stop the moment someone engages.
+3. **Responds to inbound in a structured way** — classify the reply, propose the next step, keep a human in the loop.
 
-Everything else (contact table, deal stages, activity log, basic reporting) is table-stakes CRM and should be intentionally minimal.
-
----
-
-## Phase 0 — Bootstrap (this week)
-
-- [x] Research people search APIs ([SEARCH_API_RESEARCH.md](SEARCH_API_RESEARCH.md))
-- [x] Pick stack ([ARCHITECTURE.md](ARCHITECTURE.md))
-- [x] Create GitHub repo
-- [ ] Scaffold Next.js app into `app/` subdirectory:
-  ```bash
-  pnpm dlx create-next-app@latest app \
-    --ts --eslint --tailwind --src-dir --app --no-import-alias
-  cd app && pnpm add @supabase/supabase-js @supabase/ssr drizzle-orm postgres \
-    @anthropic-ai/sdk resend inngest zod
-  pnpm add -D drizzle-kit
-  ```
-- [ ] Wire Supabase project (auth + Postgres) — copy URL + anon key into `.env.local`
-- [ ] Install shadcn/ui: `pnpm dlx shadcn@latest init`
-
-## Phase 1 — People Search MVP (week 1–2)
-
-Goal: a single page where you type "VP of Infrastructure at hyperscale data centers in Texas" and get a ranked, clickable list of 20 real people you can save to NeilCRM.
-
-- [ ] Sign up for People Data Labs free tier; store API key in `.env`
-- [ ] Build `lib/search/pdl.ts` — wraps PDL Person Search API with infra-vertical defaults (job-title regex, industry filter, company employee-count bucket)
-- [ ] Natural-language → PDL query translator using Claude (Opus 4.7 for the structured-output step)
-- [ ] `app/(dashboard)/search/page.tsx` — search box, results table, "Save to contacts" action
-- [ ] Drizzle schema for `contacts` + `companies` + `search_queries` (audit log)
-
-## Phase 2 — CRM core (week 2–3)
-
-Just enough to not be embarrassing:
-
-- [ ] Contacts list + detail view (notes, tags, custom fields kept simple)
-- [ ] Companies (auto-grouped by domain on save)
-- [ ] Deals/pipelines — single pipeline, drag-between-stages
-- [ ] Activity feed (every email send, every agent draft, every status change)
-- [ ] Independent auth: Supabase email/password + magic link. Org/workspace model so multiple users per exchange.
-
-## Phase 3 — Agent layer (week 3–5)
-
-The differentiator. Three Inngest workflows:
-
-- [ ] **Draft outbound** — given a saved contact + context, Claude drafts an opening email. Queued in an "Approval Inbox" UI. Human edits → send via Resend (or via Gmail API if connected).
-- [ ] **Follow-up scheduler** — watches threads; if no reply in N days, drafts a follow-up. Same approval queue.
-- [ ] **Reply triage** — incoming reply (Resend inbound webhook or Gmail push) → Claude classifies as: interested / not interested / question / meeting-request / unsubscribe. Meeting-request fires a notification + proposes 3 times from the user's Google Calendar free-busy.
-
-Agents log every decision to the activity feed with the prompt + model output (auditability).
-
-## Phase 4 — Polish & deploy (week 5+)
-
-- [ ] Deploy to Vercel, Supabase, Inngest Cloud
-- [ ] Sentry for errors, Axiom for structured logs
-- [ ] Stripe billing if we ever sell this
-- [ ] Onboarding flow + invite teammates
+Everything else (contact table, deal stages, reporting) is table-stakes and stays intentionally minimal.
 
 ---
 
-## What we are deliberately NOT building (yet)
+## Done
 
-- Mobile app
-- Marketing-automation features (landing pages, forms, ads)
-- A second pipeline / customizable pipelines
-- Reporting dashboards beyond a single "this week's outreach" view
-- API for third parties to integrate with NeilCRM
-- Multi-tenant SaaS — single-org for now
+- **Bootstrap** — Next.js 16 app in `app/` (App Router, React 19, Tailwind v4); GitHub repo.
+- **AI Compose + steer** (`/compose`) — paste emails → Apollo enrich → Claude streams a draft → prompt-steer + edit. (`/api/enrich`, `/api/draft`.)
+- **Apollo adapter** behind a `PeopleProvider` seam; degrades to company-level on the free plan.
+- **Engagement tracking** — open pixel + click redirector (`/api/track/*`) → `email_events`.
+- **Database** — Supabase Postgres; schema in `app/supabase/schema.sql` (12 tables incl. engagement/sequences/structured-response), accessed via the Supabase secret-key client. RLS on.
 
-These can come once the core loop works.
+## Next — Gmail wrap
+
+The headline outbound surface. Per-user Google OAuth; send the approved draft through the user's real Gmail with the tracking pixel injected; persist `email_threads`/`email_messages`. Inbound (Gmail Pub/Sub) ingest follows.
+
+## Then — Auth
+
+Supabase Auth via `@supabase/ssr` (publishable key + JWKS already configured). Org/workspace model; add per-org RLS policies (tables are currently locked to the server secret key).
+
+## Then — CRM core
+
+Contacts list + detail, companies (auto-grouped by domain), activity feed, a single deal pipeline.
+
+## Then — Agent layer (re-add Inngest)
+
+- **Follow-up scheduler** — `sequence_enrollments.next_action_at` due → draft next step into the approval queue; pause on reply/unsubscribe.
+- **Reply triage** — inbound reply → Claude classifies intent → `reply_classifications.proposed_action` → structured, human-approved response.
+
+## Then — Polish & deploy
+
+Vercel + Supabase deploy; error/log observability; onboarding.
+
+---
+
+## Deliberately NOT building yet
+
+Mobile app · marketing automation · customizable pipelines · deep reporting · third-party API · multi-tenant SaaS (single-org for now). NL people-search (`search_queries`) and PDL come after the core outbound/inbound loop works.

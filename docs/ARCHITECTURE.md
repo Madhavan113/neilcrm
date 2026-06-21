@@ -1,106 +1,67 @@
 # NeilCRM — Architecture & Stack
 
+Reflects what's **actually built** as of 2026-06-21. Items marked _(planned)_ are designed but not yet implemented.
+
 ## Stack at a glance
 
 | Layer | Choice | Why |
 |---|---|---|
-| Frontend | Next.js 15 (App Router) + React 19 + TypeScript | One framework, server components keep most data-fetching off the client, easy Vercel deploy |
-| UI | Tailwind CSS + shadcn/ui | Fast to build, no design lock-in (copy-in components, customize freely) |
-| Backend | Next.js Route Handlers + Server Actions | No second service to run. Push to Vercel = backend deployed |
-| Database | Postgres via Supabase | Postgres is the right call for relational CRM data. Supabase bundles auth, RLS, storage |
-| ORM | Drizzle | Type-safe, lightweight, SQL-first (vs. Prisma's heavier abstraction) |
-| Auth | Supabase Auth (email/password + magic link) | Independent of Google/Microsoft SSO. Multi-user via Supabase Organizations pattern |
-| Primary people search | **People Data Labs** | 1.5B profiles, $0.01/record, raw API, SQL-like filters — best for infra-vertical filtering |
-| Secondary enrichment | **Apollo.io** | Cheaper email/phone verification; fallback when PDL doesn't have a contact |
-| LLM | Anthropic Claude API | Sonnet 4.6 for drafting, Opus 4.7 for reply classification and tool-use planning |
-| Agent orchestration | Inngest | Event-driven, durable execution, free tier covers MVP, great DX for HITL approval gates |
-| Outbound email | Resend (default) or Gmail API (per-user OAuth) | Resend for the system mailbox; Gmail when we want the user's own address as the "from" |
-| Inbound email | Resend inbound webhooks or Gmail Pub/Sub | Mirrors send choice |
-| Calendar | Google Calendar API (OAuth) | Read free/busy, draft event invites |
-| Hosting | Vercel + Supabase + Inngest Cloud | Three managed services. No infra to babysit |
-| Observability | Sentry (errors), Axiom (logs) | Wired up Phase 4 |
+| Framework | Next.js 16 (App Router) + React 19 + TypeScript | One framework; Route Handlers are the backend. Note: this repo runs a **modified** Next.js 16 — see `app/AGENTS.md`. |
+| UI | Tailwind CSS v4 | Component classes live in `globals.css`. shadcn/ui not added yet. |
+| LLM | Anthropic Claude (`claude-opus-4-8`) | Streamed drafting. Thinking off + `effort: low` for fast time-to-first-token on short emails. |
+| People data | **Apollo.io** (now), People Data Labs _(later)_ | Behind a `PeopleProvider` seam (`src/lib/people`). The current Apollo key is **free-plan**, so person endpoints are blocked and the adapter degrades to company-level enrichment by domain. |
+| Database | **Supabase Postgres** | Accessed via `@supabase/supabase-js` with the **secret key** server-side (`src/lib/supabase/admin.ts`), which bypasses RLS. Schema in `app/supabase/schema.sql`. |
+| Email tracking | Open pixel + click redirector | `/api/track/open|click/[trackingId]` → `email_events`. |
+| Auth | Supabase Auth via `@supabase/ssr` _(planned)_ | Publishable key + JWKS already configured in env. |
+| Outbound email | Gmail API, per-user OAuth _(planned)_ | The "Superhuman wrap." Sends the approved draft with the tracking pixel injected. |
+| Inbound email | Gmail Pub/Sub _(planned)_ | Reply ingestion → classification. |
+| Agent orchestration | Inngest _(planned)_ | Follow-up sequences + reply triage. Dependency removed until we build this phase. |
+| Hosting | Vercel + Supabase _(planned)_ | Not deployed yet. |
 
-## Why this stack vs alternatives
+## Why Supabase client (not Drizzle)
 
-**Why not FastAPI + React separately?** Two deploys, two languages, more glue code. The CRM doesn't have CPU-bound Python workloads that would justify the split.
+We initially scaffolded Drizzle ORM with a direct Postgres connection, but switched to the **Supabase JS client + secret key** so we never need to manage a Postgres connection string. The schema is plain SQL (`app/supabase/schema.sql`, generated once from the original Drizzle schema) applied via the Supabase SQL Editor. Server code reads/writes through the admin client, which bypasses RLS; the browser/publishable key is denied by RLS until auth policies exist.
 
-**Why Supabase over Clerk + Neon?** Clerk has better UX but charges per MAU. Supabase Auth is "good enough" and bundling auth with the DB simplifies row-level security policies (org_id scoping).
+Trade-off: we lose Drizzle's typed query builder. Acceptable for the current surface; if relational query ergonomics become painful we can layer Drizzle back on (it needs the Postgres connection string) or use Supabase's generated types.
 
-**Why Inngest over BullMQ/Trigger.dev?** Inngest's step-function model is *purpose-built* for agent workflows with human-approval gates — `step.waitForEvent("user.approved-draft")` is exactly what we need. BullMQ would force us to roll our own state machine.
+## Why Apollo now, PDL later
 
-**Why PDL over Apollo as primary?** Apollo bundles outreach features we'd be paying for and not using. PDL is pure data, cheaper per-record, and its query language lets us write *infra-specific* filters (job titles matching `^(VP|Director|Head) of (Infrastructure|Data Center|Network|Capacity)`, company-keyword "colocation OR fiber OR hyperscale OR substation"). Apollo is the secondary because its outreach-quality emails are slightly better when PDL gives us a person without one.
-
-**Why not just HeroHunt?** HeroHunt is the "agent-native search" option and might be a faster Phase-1 win, but it bundles too much of the agent layer — we'd lose the ability to design our own HITL flow. Keep it on the bench as a fallback if PDL's natural-language wrapper proves slow to build.
+The user supplied an Apollo key, so Apollo is the only data source today. It sits behind `PeopleProvider`, so People Data Labs (the originally-researched primary — see `SEARCH_API_RESEARCH.md`) can slot in without touching callers. The free Apollo plan blocks person lookups (`people/match`, `bulk_match`, search all 403 `API_INACCESSIBLE`); only `organizations/enrich` works, so the adapter falls back to company-level enrichment and the AI personalizes on the company.
 
 ## High-level flow
 
 ```
-┌─────────────────┐    ┌──────────────────┐    ┌──────────────────┐
-│  Search Page    │───▶│  /api/search     │───▶│  PDL API         │
-│  (NL query)     │    │  Claude → query  │    └──────────────────┘
-└─────────────────┘    └──────────────────┘
-                              │
-                              ▼
-                       ┌──────────────────┐
-                       │  Save selected   │──▶ Postgres (contacts)
-                       └──────────────────┘
-                              │
-                              ▼
-                       ┌──────────────────┐
-                       │  Inngest event:  │
-                       │  contact.added   │
-                       └──────────────────┘
-                              │
-                              ▼
-                       ┌──────────────────┐
-                       │  Agent: draft    │──▶ Approval Inbox
-                       │  outbound        │     (human edits + sends)
-                       └──────────────────┘
-                              │
-                              ▼
-                       ┌──────────────────┐    ┌──────────────────┐
-                       │  Resend / Gmail  │───▶│  Reply lands     │
-                       └──────────────────┘    │  inbound webhook │
-                                                └──────────────────┘
-                                                         │
-                                                         ▼
-                                                ┌──────────────────┐
-                                                │ Agent: classify  │
-                                                │ → schedule/follow│
-                                                │   up/notify      │
-                                                └──────────────────┘
+Compose page ──▶ /api/enrich ──▶ Apollo (company-level)
+     │
+     ▼
+ /api/draft ──▶ Claude (streamed) ──▶ editable draft
+     │
+     ▼ (planned)
+ Gmail send (pixel injected) ──▶ recipient
+     │                              │ opens/clicks
+     ▼                              ▼
+ email_messages              /api/track/open|click ──▶ email_events
+                                    │
+                                    ▼ (planned)
+                          reply ingest ──▶ classify ──▶ structured response / follow-up
 ```
 
-## Repository layout (target)
+## Repository layout
 
 ```
 neilcrm/
-├── README.md
-├── docs/
-│   ├── PLAN.md
-│   ├── ARCHITECTURE.md
-│   ├── DATA_MODEL.md
-│   └── SEARCH_API_RESEARCH.md
-├── app/                          # Next.js app (created by create-next-app)
-│   ├── src/
-│   │   ├── app/
-│   │   │   ├── (auth)/login/
-│   │   │   ├── (dashboard)/
-│   │   │   │   ├── search/
-│   │   │   │   ├── contacts/
-│   │   │   │   ├── sequences/
-│   │   │   │   └── inbox/
-│   │   │   └── api/
-│   │   ├── components/
-│   │   ├── lib/
-│   │   │   ├── db/               # Drizzle schema + queries
-│   │   │   ├── search/           # PDL + Apollo clients
-│   │   │   ├── agents/           # Claude prompts, Inngest fns
-│   │   │   ├── email/            # Resend + Gmail adapters
-│   │   │   └── auth/             # Supabase server/client helpers
-│   ├── drizzle/                  # migrations
-│   ├── package.json
-│   └── .env.local                # NOT committed
-└── scripts/
-    └── seed.ts
+├── README.md                 # single source of truth for setup + status
+├── docs/                     # ARCHITECTURE, DATA_MODEL, PLAN, SEARCH_API_RESEARCH
+└── app/
+    ├── .env.example
+    ├── supabase/schema.sql   # canonical DB schema (apply via SQL Editor)
+    └── src/
+        ├── app/
+        │   ├── (dashboard)/compose/
+        │   └── api/{enrich,draft,track/*}
+        └── lib/
+            ├── people/        # Apollo adapter + PeopleProvider seam + cache
+            ├── ai/            # Claude drafting
+            ├── email/         # tracking pixel/links + event recording
+            └── supabase/      # server-side admin client
 ```
