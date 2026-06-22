@@ -19,7 +19,7 @@ The app lives in [`app/`](app/). Planning docs are in [`docs/`](docs/).
 
 **Planned, not yet built:** Gmail wrap (per-user OAuth + send), Supabase Auth (`@supabase/ssr`, already a dep), follow-up sequences + reply triage (Inngest — re-add when we build it), Vercel deploy.
 
-> Note: `app/` runs a **modified** Next.js 16 — see [`app/AGENTS.md`](app/AGENTS.md). Read `node_modules/next/dist/docs/` before writing Next code.
+> ⚠️ `app/` runs a **modified** Next.js 16 whose APIs differ from upstream (e.g. instant client navigation requires an `unstable_instant` route export). Read the bundled guides in `app/node_modules/next/dist/docs/` before writing Next code — don't assume stock Next.js behavior.
 
 ---
 
