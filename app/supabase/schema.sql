@@ -1,5 +1,17 @@
 -- NeilCRM schema for Supabase. Paste into Supabase → SQL Editor → Run.
--- Generated from Drizzle schema (src/lib/db/schema.ts). Safe to re-run? No — run once on an empty DB.
+-- This is the canonical schema (the original Drizzle schema was removed).
+-- Idempotent: the reset block below drops NeilCRM's tables + types first, so the
+-- whole file is safe to re-run. WARNING: that reset WIPES existing NeilCRM data —
+-- fine for first-time setup; destructive once you have rows you care about.
+
+-- ---- reset (CASCADE drops dependent FKs/indexes; order doesn't matter) ----
+DROP TABLE IF EXISTS
+  "activities","agent_drafts","reply_classifications","sequence_enrollments",
+  "sequences","email_events","email_messages","email_threads","contacts",
+  "companies","users","orgs" CASCADE;
+DROP TYPE IF EXISTS
+  "actor_type","contact_source","contact_status","message_direction","draft_kind",
+  "draft_status","email_event_type","enrollment_status","reply_intent","thread_status" CASCADE;
 
 CREATE TYPE "public"."actor_type" AS ENUM('user', 'agent', 'system');--> statement-breakpoint
 CREATE TYPE "public"."contact_source" AS ENUM('apollo', 'pdl', 'manual', 'imported');--> statement-breakpoint
