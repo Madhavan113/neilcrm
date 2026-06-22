@@ -1,8 +1,8 @@
 # NeilCRM
 
-An inbound + outbound AI CRM for an infrastructure exchange (data center, power, fiber, colo). It abstracts away the underlying people/email database: you experience it as "AI finds & drafts outreach, tracks engagement, and helps you respond" — Monaco-style human-in-the-loop, narrowed to the infra vertical.
+An inbound + outbound AI CRM for an infrastructure exchange (data center, power, fiber, colo). It abstracts away the underlying people/email database — you experience it as "AI finds & drafts outreach, tracks engagement, and helps you respond." Monaco-style human-in-the-loop, narrowed to the infra vertical.
 
-The app lives in [`app/`](app/). Planning docs are in [`docs/`](docs/).
+The Next.js app is in [`app/`](app/). This README is the single source of truth (design + setup + roadmap).
 
 ---
 
@@ -14,7 +14,7 @@ The app lives in [`app/`](app/). Planning docs are in [`docs/`](docs/).
 | UI | Tailwind CSS v4 (component classes in `globals.css`; shadcn not yet added) |
 | LLM | Anthropic Claude (`claude-opus-4-8`), streamed drafting |
 | People data | Apollo.io (free plan → company-level enrichment) behind a `PeopleProvider` seam; PDL later |
-| Database | Supabase Postgres, accessed via `@supabase/supabase-js` with the **secret key** server-side (`src/lib/supabase/admin.ts`). Schema in [`app/supabase/schema.sql`](app/supabase/schema.sql), RLS enabled |
+| Database | Supabase Postgres via `@supabase/supabase-js` with the **secret key** server-side (`src/lib/supabase/admin.ts`). Schema in [`app/supabase/schema.sql`](app/supabase/schema.sql), RLS enabled |
 | Email tracking | Open pixel + click redirector → `email_events` |
 
 **Planned, not yet built:** Gmail wrap (per-user OAuth + send), Supabase Auth (`@supabase/ssr`, already a dep), follow-up sequences + reply triage (Inngest — re-add when we build it), Vercel deploy.
@@ -23,30 +23,34 @@ The app lives in [`app/`](app/). Planning docs are in [`docs/`](docs/).
 
 ---
 
-## Run
+## Setup
 
 ```bash
 cd app
 pnpm install
-cp .env.example .env.local   # then fill in the keys
-pnpm dev                      # http://localhost:3000 → redirects to /compose
+pnpm dev          # http://localhost:3000 → redirects to /compose
 ```
 
-### Environment (`app/.env.local`)
+### Environment
 
-See [`app/.env.example`](app/.env.example). Keys:
+There is one env file: **`app/.env.local`** (gitignored — never committed). Create it with:
 
-- `ANTHROPIC_API_KEY` — Claude drafting
-- `APOLLO_API_KEY` — email/company enrichment
-- `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` — Supabase (browser/auth)
-- `SUPABASE_SECRET_KEY` — server-side data access (bypasses RLS; never exposed to the browser)
-- `SUPABASE_JWKS_URL` — for verifying auth JWTs (auth phase)
+```bash
+# app/.env.local
+ANTHROPIC_API_KEY=               # Claude drafting
+APOLLO_API_KEY=                  # email/company enrichment
+NEXT_PUBLIC_SUPABASE_URL=        # Supabase project URL
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=   # browser-safe key (auth phase)
+SUPABASE_SECRET_KEY=             # SERVER ONLY — bypasses RLS, never exposed to the browser
+SUPABASE_JWKS_URL=               # verify auth JWTs (auth phase)
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+```
 
 Routes return a clean `502` with a helpful message if a key is missing, so the UI loads regardless.
 
 ### Database
 
-Create the tables once: open [`app/supabase/schema.sql`](app/supabase/schema.sql), paste it into the Supabase dashboard → **SQL Editor** → Run. It creates all tables and enables Row-Level Security (only the server secret key can read/write until auth policies are added).
+Create the tables once: open [`app/supabase/schema.sql`](app/supabase/schema.sql), paste it into the Supabase dashboard → **SQL Editor** → Run. It (re-)creates all tables and enables Row-Level Security — only the server secret key can read/write until auth policies are added. The file is idempotent (it resets NeilCRM's tables first), so it's safe to re-run; that reset wipes existing NeilCRM data, which is fine during setup.
 
 ---
 
@@ -73,6 +77,41 @@ Open/click tracking endpoints (`/api/track/open|click/[trackingId]`) are wired a
 
 ---
 
+## Architecture decisions
+
+**Supabase client, not Drizzle.** We scaffolded Drizzle + a direct Postgres connection, then switched to the Supabase JS client + secret key so we never manage a Postgres connection string. The schema is plain SQL (`app/supabase/schema.sql`) applied via the SQL Editor; server code reads/writes through the admin client (bypasses RLS). The browser/publishable key is denied by RLS until auth policies exist. Trade-off: no typed query builder — acceptable for now; revisit with Supabase generated types or re-add Drizzle if relational queries get painful.
+
+**Apollo now, PDL later.** Apollo sits behind `PeopleProvider`, so People Data Labs can slot in without touching callers. The current Apollo key is **free-plan**, which blocks person endpoints (`people/match`, `bulk_match`, search → 403 `API_INACCESSIBLE`); only `organizations/enrich` works, so the adapter falls back to company-level enrichment and the AI personalizes on the company.
+
+**Fast drafting.** Claude `claude-opus-4-8` with thinking off + `effort: low` and streaming → ~2s time-to-first-token on short emails; the strict output-format system prompt preserves quality.
+
+---
+
+## Data model
+
+Conceptual map; exact DDL lives in `app/supabase/schema.sql`. snake_case, UUID PKs, timestamps everywhere, all scoped by `org_id` for future multi-tenancy.
+
+| Table | Purpose |
+|---|---|
+| `orgs`, `users` | Workspace + app-side user profile (auth identity comes from Supabase later). |
+| `companies`, `contacts` | People + their companies; contact `status` tracks the funnel (`new`→`opened`→`clicked`→`replied`→…). |
+| `email_threads`, `email_messages` | Conversation state. Messages carry a `tracking_id` embedded in the pixel + links. |
+| `email_events` | Append-only engagement signal: `opened` (pixel), `clicked` (redirector), `replied`, `bounced`, … Powers conversion + follow-up gating. Note: Apple Mail Privacy Protection pre-fetches pixels, so treat opens as a soft signal; weight clicks/replies higher. |
+| `sequences`, `sequence_enrollments` | Follow-up cadences; a reply/unsubscribe pauses the enrollment so we never follow up after engagement. |
+| `agent_drafts` | Human-in-the-loop approval queue for AI drafts. |
+| `reply_classifications` | Inbound intent (`interested`/`question`/`meeting_request`/`objection`/…) + `proposed_action` for a structured, human-approved response. |
+| `activities` | Append-only audit feed. |
+
+Planned (not in the schema yet): `search_queries` (NL people-search), `deals` (single pipeline), `agent_runs` (Inngest audit).
+
+---
+
 ## Roadmap
 
-See [`docs/PLAN.md`](docs/PLAN.md). Next up: **Gmail wrap** (OAuth + send the approved draft with the tracking pixel injected), then auth, then the follow-up/triage agent layer.
+**Done:** app scaffold · AI Compose + steer (`/compose`, `/api/enrich`, `/api/draft`) · Apollo adapter · open/click tracking · Supabase DB + schema.
+
+**Next — Gmail wrap:** per-user Google OAuth; send the approved draft through the user's real Gmail with the tracking pixel injected; persist threads/messages. Then inbound (Gmail Pub/Sub) ingest.
+
+**Then:** Supabase Auth (`@supabase/ssr`) + per-org RLS policies → CRM core (contacts/companies/activity, single deal pipeline) → agent layer (re-add Inngest: follow-up scheduler + reply triage) → Vercel deploy.
+
+**Deliberately deferred:** NL people-search + PDL, mobile, marketing automation, customizable pipelines, deep reporting, multi-tenant SaaS.
